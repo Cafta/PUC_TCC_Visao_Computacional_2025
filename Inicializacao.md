@@ -9,34 +9,34 @@
         └── configuration.yaml
 ```
 Para rodar com minha placa de vídeo:  
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia python home_vision/home_vision_v7.2.py  
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia python home_vision/home_vision_v7.3.py  
 
 # 🚀 Iniciar Serviços:   
 1️⃣ Iniciar Docker (se necessário)
 ```
-bashsudo systemctl start docker
+sudo systemctl start docker
 sudo systemctl status docker
 ```
 2️⃣ Iniciar MQTT Broker
 ```
-bashsudo systemctl start mosquitto
+sudo systemctl start mosquitto
 sudo systemctl status mosquitto
 ```
 3️⃣ Iniciar Home Assistant
 ```
-bashsudo docker start homeassistant
+sudo docker start homeassistant
 # Ver logs
 sudo docker logs -f homeassistant
 ```
 4️⃣ Iniciar Zigbee2MQTT
 ```
-bashsudo docker start zigbee2mqtt
+sudo docker start zigbee2mqtt
 # Ver logs
 sudo docker logs -f zigbee2mqtt
 ```
 ✅ Verificar Status de Tudo
 ```
-bash# Ver containers rodando
+# Ver containers rodando
 sudo docker ps
 
 # Ver status do MQTT
@@ -54,7 +54,7 @@ Zigbee2MQTT: http://localhost:8080
 
 🔄 Reiniciar Serviços
 ```
-bash# Reiniciar Home Assistant
+# Reiniciar Home Assistant
 sudo docker restart homeassistant
 
 # Reiniciar Zigbee2MQTT
@@ -65,7 +65,7 @@ sudo systemctl restart mosquitto
 ```
 🛑 Parar Serviços
 ```
-bash# Parar Home Assistant
+# Parar Home Assistant
 sudo docker stop homeassistant
 
 # Parar Zigbee2MQTT
@@ -87,7 +87,7 @@ nano ~/docker/zigbee2mqtt/data/configuration.yaml
 # Depois de editar, reiniciar:
 sudo docker restart zigbee2mqtt
 Testar MQTT
-bash# Terminal 1 - escutar
+# Terminal 1 - escutar
 mosquitto_sub -h localhost -t '#' -v
 
 # Terminal 2 - enviar

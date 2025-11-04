@@ -9,14 +9,14 @@ import libs.home_assistant_lib as ha_libs
 # ==================== CONFIGURAÇÕES ====================
 class Config:
     # Câmera - RESOLUÇÃO REDUZIDA para melhor FPS
-    CAMERA_INDEX = "http://192.168.15.35:8080" # 0
+    CAMERA_INDEX = 0 # "https://192.168.15.35:8080"
     FRAME_WIDTH = 640  # Reduzido de 1280
     FRAME_HEIGHT = 480  # Reduzido de 720
     
     # Performance - SKIP FRAMES para economizar processamento
-    PROCESS_EVERY_N_FRAMES = 2  # Processa 1 a cada 2 frames (dobra FPS)
+    PROCESS_EVERY_N_FRAMES = 2  # Define se vai pular alguns frames para ganhar velocidade
     
-    # GPU Settings
+    # GPU Setting
     USE_GPU = True  # Tenta usar GPU se disponível
     CUDA_DEVICE_ID = 0  # ID da GPU (0 para primeira)
     
@@ -39,11 +39,11 @@ class Config:
     ROI_MARGIN = 1.5  # Margem ao redor da mão
     
     # Gesture recognition - AJUSTADO pelo usuário
-    OPEN_HAND_THRESHOLD = 0.70  # Mão aberta
+    OPEN_HAND_THRESHOLD = 0.65  # Mão aberta (ajustado para sensibilidade)
     CLOSED_HAND_THRESHOLD = 0.30  # Mão fechada
     GESTURE_HOLD_TIME = 1.0  # Segundos para confirmar gesto (ajustado)
     QUICK_TRANSITION_TIME = 0.3  # Tempo máximo para transição rápida (ajustado)
-    STABILITY_THRESHOLD = 0.08  # Variação máxima para considerar estável
+    STABILITY_THRESHOLD = 0.1  # Variação máxima para considerar estável
     COOLDOWN_TIME = 1.0  # Tempo após comando (ajustado)
     IDLE_RESET_TIME = 0.8  # Tempo mantendo estado antes de poder fazer novo gesto
     
@@ -243,11 +243,14 @@ class PoseDetector:
                 right_wrist.visibility > 0.5):
                 self.arm_raised = True
                 self.raised_hand_position = (right_wrist.x, right_wrist.y)
-                # Calcula distância punho-cotovelo (escala de referência)
-                arm_length = np.sqrt(
-                    (right_wrist.x - right_elbow.x)**2 + 
-                    (right_wrist.y - right_elbow.y)**2
-                )
+                # Calcula distância punho-cotovelo em PIXELS e normaliza pela
+                # maior dimensão da imagem para obter uma escala consistente
+                # independente da resolução (0..1 ~ proporção da tela)
+                h, w = frame.shape[:2]
+                dx_px = (right_wrist.x - right_elbow.x) * w
+                dy_px = (right_wrist.y - right_elbow.y) * h
+                arm_length_pixels = np.sqrt(dx_px*dx_px + dy_px*dy_px)
+                arm_length = arm_length_pixels / max(w, h)
                 
             # Braço esquerdo levantado?
             elif (left_wrist.y < left_shoulder.y + Config.ARM_RAISED_THRESHOLD and
@@ -255,10 +258,18 @@ class PoseDetector:
                 self.arm_raised = True
                 self.raised_hand_position = (left_wrist.x, left_wrist.y)
                 # Calcula distância punho-cotovelo (escala de referência)
-                arm_length = np.sqrt(
-                    (left_wrist.x - left_elbow.x)**2 + 
-                    (left_wrist.y - left_elbow.y)**2
+                h, w = frame.shape[:2]
+                max_dim = max(w, h)
+                arm_length_pixels = np.sqrt(
+                    ((right_wrist.x * w) - (right_elbow.x * w))**2 + 
+                    ((right_wrist.y * h) - (right_elbow.y * h))**2
                 )
+                # Normaliza pela maior dimensão da imagem
+                arm_length = arm_length_pixels / max_dim
+                # arm_length = np.sqrt(
+                #     (left_wrist.x - left_elbow.x)**2 + 
+                #     (left_wrist.y - left_elbow.y)**2
+                # )
         
         return self.person_detected, self.arm_raised, self.raised_hand_position, arm_length, results
 
@@ -290,14 +301,17 @@ class HandDetector:
         Ajusta o tamanho baseado no comprimento do braço (escala).
         """
         h, w = frame.shape[:2]
+        # hand_position é normalizado (0..1) — mapeia para pixels
         x, y = int(hand_position[0] * w), int(hand_position[1] * h)
-        
+
         # Se temos arm_length, usa ele para ajustar o tamanho do ROI
         # Caso contrário, usa tamanho padrão
+        # if arm_length:
+        #     print(f"arm_length = {arm_length}")
         if arm_length and arm_length > 0:
             # ROI proporcional ao tamanho do braço
             # arm_length está normalizado (0-1), então multiplicamos por dimensão da imagem
-            roi_size = int(arm_length * max(w, h) * 0.4)  # 2.5x o comprimento do antebraço
+            roi_size = int((arm_length - 0.5) * max(w, h) * 2.5)  # 2.5x o comprimento do antebraço
             roi_size = max(100, min(roi_size, min(w, h)))  # Limita entre 100px e tamanho da imagem
         else:
             # Tamanho padrão fixo
@@ -324,10 +338,10 @@ class HandDetector:
         if arm_length is None or arm_length <= 0.001:
             # Usa distância do pulso até a base do dedo médio como referência
             middle_base = landmarks[9]
-            arm_length = np.sqrt(
-                (middle_base.x - wrist.x)**2 + 
-                (middle_base.y - wrist.y)**2
-            )
+            # Estima arm_length usando dimensões do frame configuradas (fallback)
+            dx = (middle_base.x - wrist.x) * Config.FRAME_WIDTH
+            dy = (middle_base.y - wrist.y) * Config.FRAME_HEIGHT
+            arm_length = np.sqrt(dx*dx + dy*dy) / max(Config.FRAME_WIDTH, Config.FRAME_HEIGHT)
             # Proteção contra divisão por zero
             if arm_length <= 0.001:
                 arm_length = 0.1
@@ -385,49 +399,107 @@ class HandDetector:
         
         # ===== CALIBRAÇÃO BASEADA EM VALORES REAIS OBSERVADOS =====
         # Dados da calibração do usuário:
-        # Fechada: tip_dist=0.32-0.35, spread=0.19-0.23, ext=0.69-0.78
-        # Aberta:  tip_dist=0.62-0.69, spread=0.38-0.41, ext=1.30-1.34
+        # Valores de referência (calibração) — ajustados para a escala ROI-normalizada
+        CLOSED_TIP_DIST = 0.30
+        OPEN_TIP_DIST = 0.68
+
+        CLOSED_SPREAD = 0.18
+        OPEN_SPREAD = 0.40
+
+        CLOSED_EXTENSION = 0.68
+        OPEN_EXTENSION = 1.34
+
+        # Subtrai o valor "fechado" e divide pela amplitude (aberto - fechado)
+        tip_score = np.clip((avg_tip_distance - CLOSED_TIP_DIST) / (OPEN_TIP_DIST - CLOSED_TIP_DIST), 0, 1)
+        spread_score = np.clip((normalized_spread - CLOSED_SPREAD) / (OPEN_SPREAD - CLOSED_SPREAD), 0, 1)
+        extension_score = np.clip((avg_extension - CLOSED_EXTENSION) / (OPEN_EXTENSION - CLOSED_EXTENSION), 0, 1)
+
+
+        # # Fechada: tip_dist=0.32-0.35, spread=0.19-0.23, ext=0.69-0.78
+        # # Aberta:  tip_dist=0.62-0.69, spread=0.38-0.41, ext=1.30-1.34
         
-        # Normaliza cada métrica para 0-1 usando valores observados
-        tip_score = np.clip((avg_tip_distance - 0.30) / 0.38, 0, 1)
-        spread_score = np.clip((normalized_spread - 0.18) / 0.23, 0, 1)
-        extension_score = np.clip((avg_extension - 0.68) / 0.67, 0, 1)
+        # # Normaliza cada métrica para 0-1 usando valores observados
+        # tip_score = np.clip((avg_tip_distance - 0.30) / 0.38, 0, 1)
+        # spread_score = np.clip((normalized_spread - 0.18) / 0.23, 0, 1)
+        # extension_score = np.clip((avg_extension - 0.68) / 0.67, 0, 1)
         
-        # Média ponderada (extensão mais confiável, depois tip, depois spread)
-        openness = (extension_score * 0.5 + tip_score * 0.35 + spread_score * 0.15)
+        # Média ponderada (dando mais peso à distância das pontas - tip)
+        openness = (tip_score * 0.5 + extension_score * 0.35 + spread_score * 0.15)
+
+        if Config.CALIBRATION_MODE:
+            print(f"[CALIB-SCORES] tip={tip_score:.3f}, spread={spread_score:.3f}, ext={extension_score:.3f} -> openness={openness:.3f}")
         
         return float(openness)
     
     def detect(self, frame, roi=None, arm_length=None):
         """
-        Detecta mão no frame ou ROI
-        arm_length: distância punho-cotovelo para normalização (opcional)
+        Detecta mão no frame ou ROI. Inclui ZOÓM no ROI para melhor escala.
         """
+        # Dimensões do frame completo (usadas para converter arm_length entre escalas)
+        h_full, w_full = frame.shape[:2]
         if roi:
             x1, y1, x2, y2 = roi
-            roi_frame = frame[y1:y2, x1:x2]
+            roi_frame = frame[y1:y2, x1:x2].copy()
             if roi_frame.size == 0:
                 return False, 0.0, None
         else:
-            roi_frame = frame
+            roi_frame = frame.copy()
             x1, y1 = 0, 0
+            h_full, w_full = frame.shape[:2]
+            x2, y2 = w_full, h_full
         
-        rgb_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2RGB)
+        # 💡 PASSO CRÍTICO: Redimensiona o ROI (Zoom)
+        # Força o ROI a ter um tamanho fixo e grande para 'ampliar' a mão,
+        # garantindo que o objeto de interesse tenha muitos pixels.
+        TARGET_ROI_SIZE = 256
+        
+        # Redimensiona o ROI para o tamanho alvo.
+        # cv2.INTER_LINEAR ou INTER_CUBIC são bons para ampliação (upscaling)
+        zoomed_roi = cv2.resize(
+            roi_frame, 
+            (TARGET_ROI_SIZE, TARGET_ROI_SIZE), 
+            interpolation=cv2.INTER_LINEAR
+        )
+        
+        # O resto do processamento é feito no 'zoomed_roi'
+        rgb_frame = cv2.cvtColor(zoomed_roi, cv2.COLOR_BGR2RGB)
         results = self.hands.process(rgb_frame)
         
         self.hand_detected = results.multi_hand_landmarks is not None
         
         if self.hand_detected:
             hand_landmarks = results.multi_hand_landmarks[0]
-            # Passa arm_length para normalização!
-            self.hand_openness = self.calculate_openness(hand_landmarks.landmark, arm_length)
+            # Calcula tamanho do ROI original (antes do zoom)
+            roi_w = x2 - x1
+            roi_h = y2 - y1
+
+            # Se foi passado arm_length (normalizado em relação ao FRAME),
+            # converte para a mesma escala do ROI (pois landmarks vêm do zoomed_roi)
+            if arm_length is not None and arm_length > 0.001:
+                # arm_length (entrada) = arm_pixels / max(frame_w, frame_h)
+                # queremos arm_length_roi = arm_pixels / max(roi_w, roi_h)
+                # => arm_length_roi = arm_length * (max(frame_w, frame_h) / max(roi_w, roi_h))
+                scale = max(w_full, h_full) / max(roi_w, roi_h) if max(roi_w, roi_h) > 0 else 1.0
+                arm_length_for_calc = arm_length * scale
+            else:
+                # estima usando landmarks e o tamanho do ROI original
+                wrist = hand_landmarks.landmark[0]
+                middle_base = hand_landmarks.landmark[9]
+                dx = (middle_base.x - wrist.x) * roi_w
+                dy = (middle_base.y - wrist.y) * roi_h
+                arm_length_pixels = np.sqrt(dx*dx + dy*dy)
+                arm_length_for_calc = arm_length_pixels / max(roi_w, roi_h) if max(roi_w, roi_h) > 0 else 0.1
+
+            # calcula openness usando arm_length na escala do ROI (0..1)
+            self.hand_openness = self.calculate_openness(hand_landmarks.landmark, arm_length_for_calc)
             
-            # Calcula centro da mão
-            h, w = roi_frame.shape[:2]
+            # Recalcula centro da mão para o frame original
+            # O centro do pulso (landmark 0) é normalizado (0-1) dentro do zoomed_roi
+            # Multiplicamos pela dimensão do ROI original e adicionamos o offset (x1, y1)
             wrist = hand_landmarks.landmark[0]
             self.hand_center = (
-                int(wrist.x * w) + x1,
-                int(wrist.y * h) + y1
+                int(wrist.x * (x2 - x1)) + x1,
+                int(wrist.y * (y2 - y1)) + y1
             )
         else:
             self.hand_openness = 0.0
@@ -453,7 +525,7 @@ class GestureAnalyzer:
         self.last_state = 'neutral'
         # self.transition_time = None
         self.holding_target = False
-        # self.target_state = None
+        # self.target_state = Nonebashsudo docker start zigbee2mqtt
     
     def get_state(self, openness):
         """Retorna o estado atual baseado na abertura"""
@@ -673,6 +745,27 @@ class GestureControlSystem:
         h, w = frame.shape[:2]
         debug_frame = frame.copy()
         
+        # Desenhando o fundo do texto
+        overlay = debug_frame.copy()
+        # Desenhar o retângulo preto opaco (sólido) na cópia
+        start_x, start_y, end_x, end_y = 5, 5, 350, 190
+        bg_color = (0, 0, 0)  # Preto
+        cv2.rectangle(overlay, (start_x, start_y), 
+            (end_x, end_y), 
+            bg_color, 
+            -1 # -1 preenche o retângulo
+        )
+        # Aplica a transparência usando addWeighted
+        alpha = 0.6  # Transparência do retângulo
+        cv2.addWeighted(
+            overlay,         # Imagem com o retângulo
+            alpha,           # Peso (transparência) para o retângulo
+            debug_frame,     # Imagem original
+            1 - alpha,       # Peso para a imagem original
+            0,               # Gamma (ajuste de brilho, geralmente 0)
+            debug_frame      # Imagem de saída (frame_debug atualizado)
+        )
+
         # FPS
         fps = np.mean(self.fps_counter) if self.fps_counter else 0
         fps_color = (0, 255, 0) if fps > 20 else (0, 165, 255) if fps > 12 else (0, 0, 255)
@@ -682,16 +775,16 @@ class GestureControlSystem:
         # Configurações de performance
         perf_text = f"Res:{Config.FRAME_WIDTH}x{Config.FRAME_HEIGHT} Skip:{Config.PROCESS_EVERY_N_FRAMES} Model:Lite"
         cv2.putText(debug_frame, perf_text, (10, 55),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # GPU Status
         gpu_status = "GPU (render only)" if Config.USE_GPU else "CPU"
         cv2.putText(debug_frame, f"Mode: {gpu_status}", (10, 80),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # Estado
         state_colors = {
-            SystemState.IDLE: (128, 128, 128),
+            SystemState.IDLE: (250, 250, 250),
             SystemState.MONITORING: (255, 255, 0),
             SystemState.ARM_RAISED: (0, 255, 255),
             SystemState.GESTURE_DETECTION: (0, 255, 0),
@@ -807,23 +900,6 @@ class GestureControlSystem:
                             (prog_bar_x + prog_bar_width//2 - 20, prog_bar_y + 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
-            # # Estado atual da mão (quando não está fazendo gesto)
-            # if not self.gesture_analyzer.holding_target:
-            #     state_text = f"Estado: {self.gesture_analyzer.get_state(self.hand_detector.hand_openness)}"
-            #     if self.gesture_analyzer.state_start_time:
-            #         time_in_state = time.time() - self.gesture_analyzer.state_start_time
-            #         state_text += f" ({time_in_state:.1f}s)"
-            #         # Mostra quando está pronto para fazer gesto
-            #         if time_in_state >= Config.IDLE_RESET_TIME:
-            #             state_text += " - PRONTO!"
-            #             text_color = (0, 255, 0)
-            #         else:
-            #             text_color = (200, 200, 200)
-            #     else:
-            #         text_color = (200, 200, 200)
-            #     cv2.putText(debug_frame, state_text, (w - 350, 30),
-            #                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
-        
         # Instruções
         instructions = [
             "Pressione 'q' para sair | 'c' para calibracao | 'd' para debug",
@@ -835,7 +911,7 @@ class GestureControlSystem:
         y_pos = h - 90
         for instruction in instructions:
             cv2.putText(debug_frame, instruction, (10, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+                    cv2.FONT_HERSHEY_TRIPLEX, 0.5, (000, 255, 255), 1)
             y_pos += 20
         
         return debug_frame

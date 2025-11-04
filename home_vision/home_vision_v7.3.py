@@ -9,12 +9,12 @@ import libs.home_assistant_lib as ha_libs
 # ==================== CONFIGURAÇÕES ====================
 class Config:
     # Câmera - RESOLUÇÃO REDUZIDA para melhor FPS
-    CAMERA_INDEX = "http://192.168.15.35:8080" # 0
-    FRAME_WIDTH = 640  # Reduzido de 1280
-    FRAME_HEIGHT = 480  # Reduzido de 720
+    CAMERA_INDEX = 0
+    FRAME_WIDTH = 1280  # Reduzido de 1280
+    FRAME_HEIGHT = 720  # Reduzido de 720
     
     # Performance - SKIP FRAMES para economizar processamento
-    PROCESS_EVERY_N_FRAMES = 2  # Processa 1 a cada 2 frames (dobra FPS)
+    PROCESS_EVERY_N_FRAMES = 4  # Processa 1 a cada 2 frames (dobra FPS)
     
     # GPU Settings
     USE_GPU = True  # Tenta usar GPU se disponível
@@ -297,7 +297,7 @@ class HandDetector:
         if arm_length and arm_length > 0:
             # ROI proporcional ao tamanho do braço
             # arm_length está normalizado (0-1), então multiplicamos por dimensão da imagem
-            roi_size = int(arm_length * max(w, h) * 0.4)  # 2.5x o comprimento do antebraço
+            roi_size = int(arm_length * max(w, h) * 1)  # 2.5x o comprimento do antebraço
             roi_size = max(100, min(roi_size, min(w, h)))  # Limita entre 100px e tamanho da imagem
         else:
             # Tamanho padrão fixo
@@ -385,13 +385,28 @@ class HandDetector:
         
         # ===== CALIBRAÇÃO BASEADA EM VALORES REAIS OBSERVADOS =====
         # Dados da calibração do usuário:
-        # Fechada: tip_dist=0.32-0.35, spread=0.19-0.23, ext=0.69-0.78
-        # Aberta:  tip_dist=0.62-0.69, spread=0.38-0.41, ext=1.30-1.34
+        CLOSED_TIP_DIST = 0.75  # Era 0.30, mas sua mão fechada é 0.35
+        OPEN_TIP_DIST = 1.4    # O valor que faz a mão ser UM (0.62-0.69)
+
+        CLOSED_SPREAD = 0.45    # Era 0.18, mas sua mão fechada é 0.23
+        OPEN_SPREAD = 0.8      # O valor que faz a mão ser UM (0.38-0.41)
+
+        CLOSED_EXTENSION = 0.65 # Mantido, pois é o mais confiável
+        OPEN_EXTENSION = 1.15   # Era 1.35
+
+        # Subtrai o valor "fechado" e divide pela amplitude (aberto - fechado)
+        tip_score = np.clip((avg_tip_distance - CLOSED_TIP_DIST) / (OPEN_TIP_DIST - CLOSED_TIP_DIST), 0, 1)
+        spread_score = np.clip((normalized_spread - CLOSED_SPREAD) / (OPEN_SPREAD - CLOSED_SPREAD), 0, 1)
+        extension_score = np.clip((avg_extension - CLOSED_EXTENSION) / (OPEN_EXTENSION - CLOSED_EXTENSION), 0, 1)
+
+
+        # # Fechada: tip_dist=0.32-0.35, spread=0.19-0.23, ext=0.69-0.78
+        # # Aberta:  tip_dist=0.62-0.69, spread=0.38-0.41, ext=1.30-1.34
         
-        # Normaliza cada métrica para 0-1 usando valores observados
-        tip_score = np.clip((avg_tip_distance - 0.30) / 0.38, 0, 1)
-        spread_score = np.clip((normalized_spread - 0.18) / 0.23, 0, 1)
-        extension_score = np.clip((avg_extension - 0.68) / 0.67, 0, 1)
+        # # Normaliza cada métrica para 0-1 usando valores observados
+        # tip_score = np.clip((avg_tip_distance - 0.30) / 0.38, 0, 1)
+        # spread_score = np.clip((normalized_spread - 0.18) / 0.23, 0, 1)
+        # extension_score = np.clip((avg_extension - 0.68) / 0.67, 0, 1)
         
         # Média ponderada (extensão mais confiável, depois tip, depois spread)
         openness = (extension_score * 0.5 + tip_score * 0.35 + spread_score * 0.15)
@@ -400,34 +415,47 @@ class HandDetector:
     
     def detect(self, frame, roi=None, arm_length=None):
         """
-        Detecta mão no frame ou ROI
-        arm_length: distância punho-cotovelo para normalização (opcional)
+        Detecta mão no frame ou ROI. Inclui ZOÓM no ROI para melhor escala.
         """
         if roi:
             x1, y1, x2, y2 = roi
-            roi_frame = frame[y1:y2, x1:x2]
+            roi_frame = frame[y1:y2, x1:x2].copy()
             if roi_frame.size == 0:
                 return False, 0.0, None
         else:
-            roi_frame = frame
+            roi_frame = frame.copy()
             x1, y1 = 0, 0
         
-        rgb_frame = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2RGB)
+        # 💡 PASSO CRÍTICO: Redimensiona o ROI (Zoom)
+        # Força o ROI a ter um tamanho fixo e grande para 'ampliar' a mão,
+        # garantindo que o objeto de interesse tenha muitos pixels.
+        TARGET_ROI_SIZE = 256
+        
+        # Redimensiona o ROI para o tamanho alvo.
+        # cv2.INTER_LINEAR ou INTER_CUBIC são bons para ampliação (upscaling)
+        zoomed_roi = cv2.resize(
+            roi_frame, 
+            (TARGET_ROI_SIZE, TARGET_ROI_SIZE), 
+            interpolation=cv2.INTER_LINEAR
+        )
+        
+        # O resto do processamento é feito no 'zoomed_roi'
+        rgb_frame = cv2.cvtColor(zoomed_roi, cv2.COLOR_BGR2RGB)
         results = self.hands.process(rgb_frame)
         
         self.hand_detected = results.multi_hand_landmarks is not None
         
         if self.hand_detected:
             hand_landmarks = results.multi_hand_landmarks[0]
-            # Passa arm_length para normalização!
             self.hand_openness = self.calculate_openness(hand_landmarks.landmark, arm_length)
             
-            # Calcula centro da mão
-            h, w = roi_frame.shape[:2]
+            # Recalcula centro da mão para o frame original
+            # O centro do pulso (landmark 0) é normalizado (0-1) dentro do zoomed_roi
+            # Multiplicamos pela dimensão do ROI original e adicionamos o offset (x1, y1)
             wrist = hand_landmarks.landmark[0]
             self.hand_center = (
-                int(wrist.x * w) + x1,
-                int(wrist.y * h) + y1
+                int(wrist.x * (x2 - x1)) + x1,
+                int(wrist.y * (y2 - y1)) + y1
             )
         else:
             self.hand_openness = 0.0
