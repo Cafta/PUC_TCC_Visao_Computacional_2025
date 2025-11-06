@@ -70,24 +70,11 @@ Substitua o `entity_id` pelo seu próprio identificador de dispositivo no Home A
 Observações sobre GPU
 ---------------------
 - MediaPipe Python normalmente roda a inferência em CPU (TensorFlow Lite). A aceleração GPU real para inferência não está plenamente disponível via MediaPipe Python API — o script faz checagens informativas e usa OpenCV+CUDA apenas para MOG2 se disponível.
-- Para ganhos de performance, reduza resolução ou aumente `PROCESS_EVERY_N_FRAMES`.
-
-Dicas e resolução de problemas
-------------------------------
-- Se não houver vídeo: verifique `CAMERA_INDEX` (pode ser 0, caminho RTSP/HTTP, ou dispositivo USB).
-- Se a comunicação com o Home Assistant falhar: verifique `home_vision/libs/home_assistant_lib.py` e as credenciais/configuração.
-- Para melhorar detecção em ambientes fracos: ajuste `MOG2_VAR_THRESHOLD`, `MIN_CONTOUR_AREA` e thresholds de abertura de mão.
 
 Limitações e casos conhecidos
 ----------------------------
 - Projeta detecção para 1 pessoa / 1 mão (configurado `max_num_hands=1`).
 - O cálculo de abertura da mão foi calibrado empiricamente; resultados variam com câmera, distância e iluminação.
-
-Próximos passos sugeridos
-------------------------
-- Extrair configurações para um arquivo `.yaml`/`.json` para facilitar ajustes sem editar código.
-- Adicionar testes unitários para `calculate_openness` e ROI.
-- Melhorar integração com Home Assistant (autenticação, retries, logs).
 
 Arquivos de interesse
 ---------------------
@@ -96,7 +83,5 @@ Arquivos de interesse
 
 Contato / autoria
 -----------------
-Arquivo original no repositório. Não há metadados explícitos de autoria/licença no código; adicione um `LICENSE` se desejar publicar.
-
----
-Gerado automaticamente a partir do código fonte `home_vision_v7.4.6.py` para fornecer visão geral e instruções básicas.
+Projeto de TCC - Engenharia de Controle e Automação - PUC Campinas
+Formatura 2025 - Carlos Amaral - cafta13@yahoo.com.br
