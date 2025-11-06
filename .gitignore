@@ -16,7 +16,7 @@ build/
 *.mo
 *.env
 .env/
-venv/
+.venv/
 ENV/
 .envrc
 *.env
